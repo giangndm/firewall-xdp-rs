@@ -16,6 +16,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
+    - name: Install dev-tools
+      run: sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev
+    - name: Install deps
+      run: cargo install bpf-linker
+    - name: Build ebpf
+      run: cargo xtask build-ebpf
     - name: Build
       run: cargo build --verbose
     - name: Run tests
