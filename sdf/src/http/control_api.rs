@@ -1,3 +1,5 @@
+use std::{collections::HashMap, net::Ipv4Addr};
+
 use poem::{web::Data, Result};
 use poem_openapi::{param::Path, payload::Json, Object, OpenApi};
 use tokio::sync::oneshot::{self, Sender};
@@ -18,6 +20,8 @@ pub enum ControlApiCmd {
     DelBlacklistSourceRule(String, Sender<ApiResult<String>>),
     SetBlacklistDestRule(Rule, Sender<ApiResult<String>>),
     DelBlacklistDestRule(String, Sender<ApiResult<String>>),
+    Reload(Sender<ApiResult<String>>),
+    BlockedStats(Sender<ApiResult<HashMap<Ipv4Addr, u32>>>),
 }
 
 #[OpenApi]
@@ -34,7 +38,8 @@ impl ControlApi {
             .send(HttpCmd::ControlApi(ControlApiCmd::SetBlacklistSourceRule(
                 rule.0, tx,
             )))
-            .await.expect("Should work");
+            .await
+            .expect("Should work");
 
         match rx.await {
             Ok(res) => Ok(Json(res)),
@@ -54,7 +59,8 @@ impl ControlApi {
             .send(HttpCmd::ControlApi(ControlApiCmd::DelBlacklistSourceRule(
                 ip.0, tx,
             )))
-            .await.expect("Should work");
+            .await
+            .expect("Should work");
 
         match rx.await {
             Ok(res) => Ok(Json(res)),
@@ -74,7 +80,8 @@ impl ControlApi {
             .send(HttpCmd::ControlApi(ControlApiCmd::SetBlacklistDestRule(
                 rule.0, tx,
             )))
-            .await.expect("Should work");
+            .await
+            .expect("Should work");
 
         match rx.await {
             Ok(res) => Ok(Json(res)),
@@ -94,7 +101,41 @@ impl ControlApi {
             .send(HttpCmd::ControlApi(ControlApiCmd::DelBlacklistDestRule(
                 ip.0, tx,
             )))
-            .await.expect("Should work");
+            .await
+            .expect("Should work");
+
+        match rx.await {
+            Ok(res) => Ok(Json(res)),
+            Err(_) => Ok(Json(ApiResult::error("INTERNAL_QUEUE_ERROR"))),
+        }
+    }
+
+    /// Set a source blacklist rule
+    #[oai(path = "/rules/reload", method = "get")]
+    async fn reload_rule(&self, ctx: Data<&HttpContext>) -> Result<Json<ApiResult<String>>> {
+        let (tx, rx) = oneshot::channel();
+        ctx.tx
+            .send(HttpCmd::ControlApi(ControlApiCmd::Reload(tx)))
+            .await
+            .expect("Should work");
+
+        match rx.await {
+            Ok(res) => Ok(Json(res)),
+            Err(_) => Ok(Json(ApiResult::error("INTERNAL_QUEUE_ERROR"))),
+        }
+    }
+
+    /// Set a source blacklist rule
+    #[oai(path = "/stats/blocked", method = "get")]
+    async fn stats_blocked(
+        &self,
+        ctx: Data<&HttpContext>,
+    ) -> Result<Json<ApiResult<HashMap<Ipv4Addr, u32>>>> {
+        let (tx, rx) = oneshot::channel();
+        ctx.tx
+            .send(HttpCmd::ControlApi(ControlApiCmd::BlockedStats(tx)))
+            .await
+            .expect("Should work");
 
         match rx.await {
             Ok(res) => Ok(Json(res)),

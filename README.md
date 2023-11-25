@@ -36,7 +36,8 @@ The list can be updated by some ways
 
 ### BLACKLIST map
 
-In this version each 
+Map between ip address and port range
 
 ### WHITELIST map
 
+Map between ip address and port range
