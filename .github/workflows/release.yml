@@ -59,11 +59,11 @@ jobs:
       - name: Install deps
         run: cargo install bpf-linker
 
-      - name: Check file
-        run: ls -R
-
       - name: Build ebpf
         run: cargo xtask build-ebpf
+
+      - name: Check file
+        run: ls -R
 
       - name: Build
         uses: actions-rs/cargo@v1
