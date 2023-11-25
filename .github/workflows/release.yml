@@ -60,7 +60,7 @@ jobs:
         run: cargo install bpf-linker
 
       - name: Build ebpf
-        run: cargo xtask build-ebpf
+        run: cargo xtask build-ebpf --release
 
       - name: Check file
         run: ls -R
