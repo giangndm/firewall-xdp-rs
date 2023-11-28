@@ -1,42 +1,37 @@
 use std::{collections::HashMap, net::Ipv4Addr};
 
 use poem::{web::Data, Result};
-use poem_openapi::{param::Path, payload::Json, Object, OpenApi};
+use poem_openapi::{param::Path, payload::Json, OpenApi};
 use tokio::sync::oneshot::{self, Sender};
 
 use super::{ApiResult, HttpCmd, HttpContext};
 
 pub struct ControlApi;
 
-#[derive(Object)]
-pub struct Rule {
-    pub ip: String,
-    pub port_begin: u16,
-    pub port_end: u16,
-}
-
 pub enum ControlApiCmd {
-    SetBlacklistSourceRule(Rule, Sender<ApiResult<String>>),
+    SetBlacklistSourceRule(String, Sender<ApiResult<String>>),
     DelBlacklistSourceRule(String, Sender<ApiResult<String>>),
-    SetBlacklistDestRule(Rule, Sender<ApiResult<String>>),
-    DelBlacklistDestRule(String, Sender<ApiResult<String>>),
+    SetWhitelistSourceRule(String, Sender<ApiResult<String>>),
+    DelWhitelistSourceRule(String, Sender<ApiResult<String>>),
+    SetBlacklistPortRule(u16, Sender<ApiResult<String>>),
+    DelBlacklistPortRule(u16, Sender<ApiResult<String>>),
     Reload(Sender<ApiResult<String>>),
-    BlockedStats(Sender<ApiResult<HashMap<Ipv4Addr, u32>>>),
+    BlockedStats(Sender<ApiResult<HashMap<u16, u64>>>),
 }
 
 #[OpenApi]
 impl ControlApi {
     /// Set a source blacklist rule
-    #[oai(path = "/rules/blacklist/source", method = "post")]
-    async fn set_source_rule(
+    #[oai(path = "/rules/blacklist/source/:ip", method = "post")]
+    async fn set_blacklist_source_rule(
         &self,
         ctx: Data<&HttpContext>,
-        rule: Json<Rule>,
+        ip: Path<String>,
     ) -> Result<Json<ApiResult<String>>> {
         let (tx, rx) = oneshot::channel();
         ctx.tx
             .send(HttpCmd::ControlApi(ControlApiCmd::SetBlacklistSourceRule(
-                rule.0, tx,
+                ip.0, tx,
             )))
             .await
             .expect("Should work");
@@ -49,7 +44,7 @@ impl ControlApi {
 
     /// Del a source blacklist rule
     #[oai(path = "/rules/blacklist/source/:ip", method = "post")]
-    async fn del_source_rule(
+    async fn del_blacklist_source_rule(
         &self,
         ctx: Data<&HttpContext>,
         ip: Path<String>,
@@ -68,17 +63,17 @@ impl ControlApi {
         }
     }
 
-    /// Set a dest blacklist rule
-    #[oai(path = "/rules/blacklist/dest", method = "post")]
-    async fn set_dest_rule(
+    /// Set a source blacklist rule
+    #[oai(path = "/rules/whitelist/source/:ip", method = "post")]
+    async fn set_whitelist_source_rule(
         &self,
         ctx: Data<&HttpContext>,
-        rule: Json<Rule>,
+        ip: Path<String>,
     ) -> Result<Json<ApiResult<String>>> {
         let (tx, rx) = oneshot::channel();
         ctx.tx
-            .send(HttpCmd::ControlApi(ControlApiCmd::SetBlacklistDestRule(
-                rule.0, tx,
+            .send(HttpCmd::ControlApi(ControlApiCmd::SetWhitelistSourceRule(
+                ip.0, tx,
             )))
             .await
             .expect("Should work");
@@ -89,17 +84,59 @@ impl ControlApi {
         }
     }
 
-    /// Del a dest blacklist rule
-    #[oai(path = "/rules/blacklist/dest/:ip", method = "post")]
-    async fn del_dest_rule(
+    /// Del a source blacklist rule
+    #[oai(path = "/rules/whitelist/source/:ip", method = "post")]
+    async fn del_whitelist_source_rule(
         &self,
         ctx: Data<&HttpContext>,
         ip: Path<String>,
     ) -> Result<Json<ApiResult<String>>> {
         let (tx, rx) = oneshot::channel();
         ctx.tx
-            .send(HttpCmd::ControlApi(ControlApiCmd::DelBlacklistDestRule(
+            .send(HttpCmd::ControlApi(ControlApiCmd::DelWhitelistSourceRule(
                 ip.0, tx,
+            )))
+            .await
+            .expect("Should work");
+
+        match rx.await {
+            Ok(res) => Ok(Json(res)),
+            Err(_) => Ok(Json(ApiResult::error("INTERNAL_QUEUE_ERROR"))),
+        }
+    }
+
+    /// Set a port blacklist rule
+    #[oai(path = "/rules/blacklist/port/:port", method = "post")]
+    async fn set_port_rule(
+        &self,
+        ctx: Data<&HttpContext>,
+        port: Path<u16>,
+    ) -> Result<Json<ApiResult<String>>> {
+        let (tx, rx) = oneshot::channel();
+        ctx.tx
+            .send(HttpCmd::ControlApi(ControlApiCmd::SetBlacklistPortRule(
+                port.0, tx,
+            )))
+            .await
+            .expect("Should work");
+
+        match rx.await {
+            Ok(res) => Ok(Json(res)),
+            Err(_) => Ok(Json(ApiResult::error("INTERNAL_QUEUE_ERROR"))),
+        }
+    }
+
+    /// Del a port blacklist rule
+    #[oai(path = "/rules/blacklist/port/:port", method = "delete")]
+    async fn del_port_rule(
+        &self,
+        ctx: Data<&HttpContext>,
+        port: Path<u16>,
+    ) -> Result<Json<ApiResult<String>>> {
+        let (tx, rx) = oneshot::channel();
+        ctx.tx
+            .send(HttpCmd::ControlApi(ControlApiCmd::DelBlacklistPortRule(
+                port.0, tx,
             )))
             .await
             .expect("Should work");
@@ -130,7 +167,7 @@ impl ControlApi {
     async fn stats_blocked(
         &self,
         ctx: Data<&HttpContext>,
-    ) -> Result<Json<ApiResult<HashMap<Ipv4Addr, u32>>>> {
+    ) -> Result<Json<ApiResult<HashMap<u16, u64>>>> {
         let (tx, rx) = oneshot::channel();
         ctx.tx
             .send(HttpCmd::ControlApi(ControlApiCmd::BlockedStats(tx)))

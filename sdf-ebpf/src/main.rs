@@ -2,28 +2,23 @@
 #![no_main]
 
 use aya_bpf::{bindings::xdp_action, macros::{xdp, map}, programs::XdpContext, maps::HashMap};
-use aya_log_ebpf::info;
 use network_types::{eth::{EthHdr, EtherType}, ip::{Ipv4Hdr, IpProto}, udp::UdpHdr, tcp::TcpHdr};
-use sdf_common::PortRange;
 
 use crate::parse::ptr_at;
 
 mod parse;
 
 #[map]
-static SRC_BLACKLIST: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(4096, 0);
+static SRC_BLACKLIST: HashMap<u32, u8> = HashMap::<u32, u8>::with_max_entries(4096, 0);
 
 #[map]
-static DST_BLACKLIST: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(4096, 0);
+static SRC_WHITELIST: HashMap<u32, u8> = HashMap::<u32, u8>::with_max_entries(4096, 0);
 
 #[map]
-static SRC_WHITELIST: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(4096, 0);
+static PORT_BLACKLIST: HashMap<u16, u8> = HashMap::<u16, u8>::with_max_entries(4096, 0);
 
 #[map]
-static DST_WHITELIST: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(4096, 0);
-
-#[map]
-static BLOCKED_STATS: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(4096, 0);
+static BLOCKED_STATS: HashMap<u16, u64> = HashMap::<u16, u64>::with_max_entries(1 << 16, 0);
 
 #[xdp]
 pub fn sdf(ctx: XdpContext) -> u32 {
@@ -33,32 +28,16 @@ pub fn sdf(ctx: XdpContext) -> u32 {
     }
 }
 
-fn increase_map(map: &HashMap<u32, u32>, key: u32) {
-    if let Some(slot) = map.get_ptr_mut(&key) {
+fn increase_drop(map: &HashMap<u16, u64>, port: u16) {
+    if let Some(slot) = map.get_ptr_mut(&port) {
         unsafe { *slot += 1 };
     } else {
-        map.insert(&key, &1, 0);
+        map.insert(&port, &1, 0);
     }
 }
 
-fn allow_tuple(ctx: &XdpContext, blacklist: &HashMap<u32, u32>, whitelist: &HashMap<u32, u32>, addr: u32, port: u16) -> bool {
-    if let Some(port_range) = unsafe { blacklist.get(&addr) } {
-        let range = PortRange::from(*port_range);
-        if range.0 > port || range.1 < port {
-            return true;
-        }
-    } else {
-        return true;
-    };
-
-    if let Some(port_range) = unsafe { whitelist.get(&addr) } {
-        let range = PortRange::from(*port_range);
-        if range.0 <= port && port <= range.1 {
-            return true;
-        }
-    };
-
-    false
+fn allow_port(_ctx: &XdpContext, blacklist: &HashMap<u16, u8>, port: u16) -> bool {
+    unsafe { blacklist.get(&port).is_none() }
 }
 
 fn try_sdf(ctx: XdpContext) -> Result<u32, ()> {
@@ -70,9 +49,9 @@ fn try_sdf(ctx: XdpContext) -> Result<u32, ()> {
 
     let ipv4hdr: *const Ipv4Hdr = unsafe { ptr_at(&ctx, EthHdr::LEN)? };
     let source = u32::from_be(unsafe { (*ipv4hdr).src_addr });
-    let dest = u32::from_be(unsafe { (*ipv4hdr).dst_addr });
+    // let dest = u32::from_be(unsafe { (*ipv4hdr).dst_addr });
 
-    let (source_port, dest_port) = unsafe { 
+    let (source_port, _dest_port) = unsafe { 
         match (*ipv4hdr).proto {
             IpProto::Udp => {
                 let udphdr: *const UdpHdr = ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
@@ -86,13 +65,16 @@ fn try_sdf(ctx: XdpContext) -> Result<u32, ()> {
         }
     };
 
-    if !allow_tuple(&ctx, &SRC_BLACKLIST, &SRC_WHITELIST, source, source_port) {
-        increase_map(&BLOCKED_STATS, source);
-        return Ok(xdp_action::XDP_DROP)
+    if unsafe { SRC_WHITELIST.get(&source).is_some() } {
+        return Ok(xdp_action::XDP_PASS);
     }
 
-    if !allow_tuple(&ctx, &DST_BLACKLIST, &DST_WHITELIST, dest, dest_port) {
-        increase_map(&BLOCKED_STATS, source);
+    if unsafe { SRC_BLACKLIST.get(&source).is_some() } {
+        return Ok(xdp_action::XDP_DROP);
+    }
+
+    if !allow_port(&ctx, &PORT_BLACKLIST, source_port) {
+        increase_drop(&BLOCKED_STATS, source_port);
         return Ok(xdp_action::XDP_DROP)
     }
 
