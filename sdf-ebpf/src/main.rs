@@ -1,7 +1,8 @@
 #![no_std]
 #![no_main]
 
-use aya_bpf::{bindings::xdp_action, macros::{xdp, map}, programs::XdpContext, maps::HashMap};
+use aya_bpf::{bindings::xdp_action, macros::{xdp, classifier, map}, programs::{XdpContext, TcContext}, maps::HashMap};
+use aya_log_ebpf::info;
 use network_types::{eth::{EthHdr, EtherType}, ip::{Ipv4Hdr, IpProto}, udp::UdpHdr, tcp::TcpHdr};
 
 use crate::parse::ptr_at;
@@ -21,10 +22,18 @@ static PORT_BLACKLIST: HashMap<u16, u8> = HashMap::<u16, u8>::with_max_entries(4
 static BLOCKED_STATS: HashMap<u16, u64> = HashMap::<u16, u64>::with_max_entries(1 << 16, 0);
 
 #[xdp]
-pub fn sdf(ctx: XdpContext) -> u32 {
-    match try_sdf(ctx) {
+pub fn sdf_ingress(ctx: XdpContext) -> u32 {
+    match try_sdf_ingress(ctx) {
         Ok(ret) => ret,
         Err(_) => xdp_action::XDP_ABORTED,
+    }
+}
+
+#[classifier]
+pub fn sdf_egress(ctx: TcContext) -> i32 {
+    match try_sdf_egress(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
     }
 }
 
@@ -40,7 +49,7 @@ fn allow_port(_ctx: &XdpContext, blacklist: &HashMap<u16, u8>, port: u16) -> boo
     unsafe { blacklist.get(&port).is_none() }
 }
 
-fn try_sdf(ctx: XdpContext) -> Result<u32, ()> {
+fn try_sdf_ingress(ctx: XdpContext) -> Result<u32, ()> {
     let ethhdr: *const EthHdr = unsafe { ptr_at(&ctx, 0)? };
     match unsafe { (*ethhdr).ether_type } {
         EtherType::Ipv4 => {}
@@ -79,6 +88,11 @@ fn try_sdf(ctx: XdpContext) -> Result<u32, ()> {
     }
 
     Ok(xdp_action::XDP_PASS)
+}
+
+fn try_sdf_egress(ctx: TcContext) -> Result<i32, i32> {
+    info!(&ctx, "received a packet");
+    Ok(1)
 }
 
 #[panic_handler]
