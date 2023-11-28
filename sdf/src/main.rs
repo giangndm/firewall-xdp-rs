@@ -6,7 +6,7 @@ use aya_log::BpfLogger;
 use clap::Parser;
 use config_file::FromConfigFile;
 use log::{debug, info, warn};
-use sdf_common::{IpV4Addr, PortRange};
+use sdf_common::IpV4Addr;
 use tokio::sync::mpsc;
 use tokio::{select, signal};
 
@@ -82,7 +82,7 @@ async fn main() -> Result<(), anyhow::Error> {
         if let Some(file) = &opt.config {
             let config = StaticConfig::from_config_file(&file).map_err(|e| e.to_string())?;
 
-            let mut src_blacklist: HashMap<_, u32, u32> =
+            let mut src_blacklist: HashMap<_, u32, u8> =
                 HashMap::try_from(bpf.map_mut("SRC_BLACKLIST").unwrap())
                     .map_err(|e| e.to_string())?;
             let keys = src_blacklist.keys().collect::<Result<Vec<_>, _>>().unwrap();
@@ -90,43 +90,46 @@ async fn main() -> Result<(), anyhow::Error> {
                 src_blacklist.remove(&ip);
             }
 
-            for rule in config.source_blacklist.unwrap_or(vec![]) {
-                if let Err(e) = src_blacklist.insert(
-                    u32::from(IpV4Addr(rule.ip.octets())),
-                    u32::from(rule.port_range()),
-                    0,
-                ) {
-                    warn!("add source blacklist rule {} error {}", rule.ip, e);
+            for ip in config.source_blacklist {
+                if let Err(e) = src_blacklist.insert(u32::from(IpV4Addr(ip.octets())), 0, 0) {
+                    warn!("add source blacklist rule {} error {}", ip, e);
                 } else {
-                    info!(
-                        "added source blacklist rule {}:{:?}",
-                        rule.ip,
-                        rule.port_range()
-                    );
+                    info!("added source blacklist rule {}", ip);
                 }
             }
 
-            let mut dst_blacklist: HashMap<_, u32, u32> =
-                HashMap::try_from(bpf.map_mut("DST_BLACKLIST").unwrap())
+            let mut src_whitelist: HashMap<_, u32, u8> =
+                HashMap::try_from(bpf.map_mut("SRC_WHITELIST").unwrap())
                     .map_err(|e| e.to_string())?;
-            let keys: Vec<u32> = dst_blacklist.keys().collect::<Result<Vec<_>, _>>().unwrap();
+            let keys: Vec<u32> = src_whitelist.keys().collect::<Result<Vec<_>, _>>().unwrap();
             for ip in keys {
-                dst_blacklist.remove(&ip);
+                src_whitelist.remove(&ip);
             }
 
-            for rule in config.dest_blacklist.unwrap_or(vec![]) {
-                if let Err(e) = dst_blacklist.insert(
-                    u32::from(IpV4Addr(rule.ip.octets())),
-                    u32::from(rule.port_range()),
-                    0,
-                ) {
-                    warn!("add dest blacklist rule {} error {}", rule.ip, e);
+            for ip in config.source_whitelist {
+                if let Err(e) = src_whitelist.insert(u32::from(IpV4Addr(ip.octets())), 0, 0) {
+                    warn!("add source whitelist rule {} error {}", ip, e);
                 } else {
-                    info!(
-                        "added dest blacklist rule {}:{:?}",
-                        rule.ip,
-                        rule.port_range()
-                    );
+                    info!("added source whitelist rule {}", ip);
+                }
+            }
+
+            let mut port_blacklist: HashMap<_, u16, u8> =
+                HashMap::try_from(bpf.map_mut("PORT_BLACKLIST").unwrap())
+                    .map_err(|e| e.to_string())?;
+            let keys: Vec<u16> = port_blacklist
+                .keys()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            for port in keys {
+                port_blacklist.remove(&port);
+            }
+
+            for port in config.port_blacklist {
+                if let Err(e) = port_blacklist.insert(port, 0, 0) {
+                    warn!("add port blacklist rule {} error {}", port, e);
+                } else {
+                    info!("added port blacklist rule {}", port);
                 }
             }
         }
@@ -147,20 +150,20 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 },
                 HttpCmd::ControlApi(ControlApiCmd::BlockedStats(res)) => {
-                    let blocked: HashMap<_, u32, u32> = HashMap::try_from(bpf.map_mut("BLOCKED_STATS").unwrap())?;
+                    let blocked: HashMap<_, u16, u64> = HashMap::try_from(bpf.map_mut("BLOCKED_STATS").unwrap())?;
                     let mut stats = std::collections::HashMap::new();
                     for row in blocked.iter() {
-                        if let Ok((ip, count)) = row {
-                            stats.insert(ip.into(), count);
+                        if let Ok((port, count)) = row {
+                            stats.insert(port, count);
                         }
                     }
                     res.send(ApiResult::success(stats)).expect("Should work");
                 }
-                HttpCmd::ControlApi(ControlApiCmd::SetBlacklistSourceRule(rule, res)) => {
-                    let mut src_blacklist: HashMap<_, u32, u32> = HashMap::try_from(bpf.map_mut("SRC_BLACKLIST").unwrap())?;
-                    if let Some(ip) = utils::to_ipv4(&rule.ip) {
-                        if src_blacklist.insert(ip, u32::from(PortRange (rule.port_begin, rule.port_end)), 0).is_ok() {
-                            info!("added source blacklist {}:[{}-{}]", rule.ip, rule.port_begin, rule.port_end);
+                HttpCmd::ControlApi(ControlApiCmd::SetBlacklistSourceRule(ip, res)) => {
+                    let mut src_blacklist: HashMap<_, u32, u8> = HashMap::try_from(bpf.map_mut("SRC_BLACKLIST").unwrap())?;
+                    if let Some(ip) = utils::to_ipv4(&ip) {
+                        if src_blacklist.insert(ip, 0, 0).is_ok() {
+                            info!("added source blacklist {}", ip);
                             res.send(ApiResult::success("ADDED".to_string())).expect("Should work");
                         } else {
                             res.send(ApiResult::error("CANNOT_ADD_TO_MAP")).expect("Should work");
@@ -170,7 +173,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 },
                 HttpCmd::ControlApi(ControlApiCmd::DelBlacklistSourceRule(ip, res)) => {
-                    let mut src_blacklist: HashMap<_, u32, u32> = HashMap::try_from(bpf.map_mut("SRC_BLACKLIST").unwrap())?;
+                    let mut src_blacklist: HashMap<_, u32, u8> = HashMap::try_from(bpf.map_mut("SRC_BLACKLIST").unwrap())?;
                     if let Some(ip) = utils::to_ipv4(&ip) {
                         if src_blacklist.remove(&ip).is_ok() {
                             info!("removed source blacklist {}", ip);
@@ -182,11 +185,11 @@ async fn main() -> Result<(), anyhow::Error> {
                         res.send(ApiResult::error("ONLY_SUPPORT_IP_V4")).expect("Should work");
                     }
                 },
-                HttpCmd::ControlApi(ControlApiCmd::SetBlacklistDestRule(rule, res)) => {
-                    let mut dst_blacklist: HashMap<_, u32, u32> = HashMap::try_from(bpf.map_mut("DST_BLACKLIST").unwrap())?;
-                    if let Some(ip) = utils::to_ipv4(&rule.ip) {
-                        if dst_blacklist.insert(ip, u32::from(PortRange (rule.port_begin, rule.port_end)), 0).is_ok() {
-                            info!("added dest blacklist {}:[{}-{}]", rule.ip, rule.port_begin, rule.port_end);
+                HttpCmd::ControlApi(ControlApiCmd::SetWhitelistSourceRule(ip, res)) => {
+                    let mut src_whitelist: HashMap<_, u32, u8> = HashMap::try_from(bpf.map_mut("SRC_WHITELIST").unwrap())?;
+                    if let Some(ip) = utils::to_ipv4(&ip) {
+                        if src_whitelist.insert(ip, 0, 0).is_ok() {
+                            info!("added source whitelist {}", ip);
                             res.send(ApiResult::success("ADDED".to_string())).expect("Should work");
                         } else {
                             res.send(ApiResult::error("CANNOT_ADD_TO_MAP")).expect("Should work");
@@ -195,17 +198,35 @@ async fn main() -> Result<(), anyhow::Error> {
                         res.send(ApiResult::error("ONLY_SUPPORT_IP_V4")).expect("Should work");
                     }
                 },
-                HttpCmd::ControlApi(ControlApiCmd::DelBlacklistDestRule(ip, res)) => {
-                    let mut dst_blacklist: HashMap<_, u32, u32> = HashMap::try_from(bpf.map_mut("DST_BLACKLIST").unwrap())?;
+                HttpCmd::ControlApi(ControlApiCmd::DelWhitelistSourceRule(ip, res)) => {
+                    let mut src_whitelist: HashMap<_, u32, u8> = HashMap::try_from(bpf.map_mut("SRC_WHITELIST").unwrap())?;
                     if let Some(ip) = utils::to_ipv4(&ip) {
-                        if dst_blacklist.remove(&ip).is_ok() {
-                            info!("removed source blacklist {}", ip);
+                        if src_whitelist.remove(&ip).is_ok() {
+                            info!("removed source whitelist {}", ip);
                             res.send(ApiResult::success("REMOVED".to_string())).expect("Should work");
                         } else {
                             res.send(ApiResult::error("IP_NOT_FOUND")).expect("Should work");
                         }
                     } else {
                         res.send(ApiResult::error("ONLY_SUPPORT_IP_V4")).expect("Should work");
+                    }
+                },
+                HttpCmd::ControlApi(ControlApiCmd::SetBlacklistPortRule(port, res)) => {
+                    let mut port_blacklist: HashMap<_, u16, u8> = HashMap::try_from(bpf.map_mut("PORT_BLACKLIST").unwrap())?;
+                    if port_blacklist.insert(port, 0, 0).is_ok() {
+                        info!("added port blacklist {}", port);
+                        res.send(ApiResult::success("ADDED".to_string())).expect("Should work");
+                    } else {
+                        res.send(ApiResult::error("CANNOT_ADD_TO_MAP")).expect("Should work");
+                    }
+                },
+                HttpCmd::ControlApi(ControlApiCmd::DelBlacklistPortRule(port, res)) => {
+                    let mut port_blacklist: HashMap<_, u16, u8> = HashMap::try_from(bpf.map_mut("PORT_BLACKLIST").unwrap())?;
+                    if port_blacklist.remove(&port).is_ok() {
+                        info!("removed port blacklist {}", port);
+                        res.send(ApiResult::success("REMOVED".to_string())).expect("Should work");
+                    } else {
+                        res.send(ApiResult::error("IP_NOT_FOUND")).expect("Should work");
                     }
                 },
             },
