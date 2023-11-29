@@ -3,7 +3,7 @@
 
 use aya_bpf::{bindings::xdp_action, macros::{xdp, classifier, map}, programs::{XdpContext, TcContext}, maps::HashMap};
 use aya_log_ebpf::{info, error};
-use network_types::{eth::{EthHdr, EtherType}, ip::{Ipv4Hdr, IpProto}, udp::UdpHdr, tcp::TcpHdr};
+use network_types::{eth::{EthHdr, EtherType}, ip::{Ipv4Hdr, IpProto}, udp::UdpHdr};
 
 use crate::parse::{ptr_at, tc_ptr_at};
 
@@ -70,10 +70,10 @@ fn try_sdf_ingress(ctx: XdpContext) -> Result<u32, ()> {
                 let udphdr: *const UdpHdr = ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
                 ((*udphdr).source.to_be(), (*udphdr).dest.to_be())
             },
-            IpProto::Tcp => {
-                let tcphdr: *const TcpHdr = ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-                ((*tcphdr).source.to_be(), (*tcphdr).dest.to_be())
-            }
+            // IpProto::Tcp => {
+            //     let tcphdr: *const TcpHdr = ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            //     ((*tcphdr).source.to_be(), (*tcphdr).dest.to_be())
+            // }
             _ => return Ok(xdp_action::XDP_PASS)
         }
     };
