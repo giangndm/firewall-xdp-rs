@@ -1,6 +1,6 @@
 use anyhow::Context;
 use aya::maps::HashMap;
-use aya::programs::{Xdp, XdpFlags};
+use aya::programs::{tc, SchedClassifier, TcAttachType, Xdp, XdpFlags};
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 use clap::Parser;
@@ -62,10 +62,20 @@ async fn main() -> Result<(), anyhow::Error> {
         // This can happen if you remove all log statements from your eBPF program.
         warn!("failed to initialize eBPF logger: {}", e);
     }
-    let program: &mut Xdp = bpf.program_mut("sdf").unwrap().try_into()?;
-    program.load()?;
-    program.attach(&opt.iface, XdpFlags::default())
+
+    info!("loading sdf_ingress");
+    let program_ingress: &mut Xdp = bpf.program_mut("sdf_ingress").unwrap().try_into()?;
+    program_ingress.load()?;
+    program_ingress.attach(&opt.iface, XdpFlags::default())
         .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
+
+    info!("loading sdf_egress");
+    let _ = tc::qdisc_add_clsact(&opt.iface);
+    let program_egress: &mut SchedClassifier = bpf.program_mut("sdf_egress").unwrap().try_into()?;
+    program_egress.load()?;
+    program_egress.attach(&opt.iface, TcAttachType::Egress)?;
+
+    info!("loaded ebpf programs");
 
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
 
