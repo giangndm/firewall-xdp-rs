@@ -2,10 +2,12 @@
 #![no_main]
 
 use aya_bpf::{bindings::xdp_action, macros::{xdp, classifier, map}, programs::{XdpContext, TcContext}, maps::HashMap};
-use aya_log_ebpf::info;
+use aya_log_ebpf::{info, error};
 use network_types::{eth::{EthHdr, EtherType}, ip::{Ipv4Hdr, IpProto}, udp::UdpHdr, tcp::TcpHdr};
 
-use crate::parse::ptr_at;
+use crate::parse::{ptr_at, tc_ptr_at};
+
+const ETH_IP_V4_TYPE: u16 = 0x0800_u16;
 
 mod parse;
 
@@ -37,11 +39,13 @@ pub fn sdf_egress(ctx: TcContext) -> i32 {
     }
 }
 
-fn increase_drop(map: &HashMap<u16, u64>, port: u16) {
+fn increase_drop(ctx: &XdpContext, map: &HashMap<u16, u64>, port: u16) {
     if let Some(slot) = map.get_ptr_mut(&port) {
         unsafe { *slot += 1 };
     } else {
-        map.insert(&port, &1, 0);
+        if let Err(e) = map.insert(&port, &1, 0) {
+            error!(ctx, "add port {} to BLOCKED_STATS error {}", port, e);
+        }
     }
 }
 
@@ -83,7 +87,7 @@ fn try_sdf_ingress(ctx: XdpContext) -> Result<u32, ()> {
     }
 
     if !allow_port(&ctx, &PORT_BLACKLIST, source_port) {
-        increase_drop(&BLOCKED_STATS, source_port);
+        increase_drop(&ctx, &BLOCKED_STATS, source_port);
         return Ok(xdp_action::XDP_DROP)
     }
 
@@ -91,7 +95,27 @@ fn try_sdf_ingress(ctx: XdpContext) -> Result<u32, ()> {
 }
 
 fn try_sdf_egress(ctx: TcContext) -> Result<i32, i32> {
-    info!(&ctx, "received a packet");
+    let mut buf: [u8; 4] = [0; 4];
+    unsafe { tc_ptr_at(&ctx, 12, &mut buf[0..2])? };
+
+    if buf[0] != (ETH_IP_V4_TYPE >> 8) as u8 || buf[1] != 0 {
+        return Ok(1);
+    }
+
+    unsafe { tc_ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN, &mut buf[0..4])? };
+
+    let dest_port = (buf[2] as u16) << 8 | buf[3] as u16;
+    if unsafe { PORT_BLACKLIST.get(&dest_port).is_some() } {
+        unsafe { tc_ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN - 4, &mut buf[0..4])? };
+        let dest_ip = u32::from_be_bytes(buf);
+        if unsafe { SRC_WHITELIST.get(&dest_ip).is_none() } {
+            if let Err(e) = SRC_WHITELIST.insert(&dest_ip, &0, 0) {
+                error!(&ctx, "add {:x}:{} to whitelist error {}", dest_ip, dest_port, e);
+            } else {
+                info!(&ctx, "auto added {:x}:{} to whitelist", dest_ip, dest_port);
+            }
+        }
+    }
     Ok(1)
 }
 
